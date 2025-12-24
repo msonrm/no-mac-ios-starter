@@ -1,0 +1,86 @@
+name: Setup Certificates (One-time Setup)
+
+# Run this workflow once to generate certificates
+
+on:
+  workflow_dispatch:
+    inputs:
+      certificate_type:
+        description: 'Certificate type'
+        required: true
+        type: choice
+        options:
+          - appstore
+        default: 'appstore'
+
+jobs:
+  setup:
+    name: Generate Certificates
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen || true
+
+      - name: Create Keychain
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+      - name: Configure Git for Match
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: Setup SSH for Match Repository
+        env:
+          MATCH_GIT_PRIVATE_KEY: ${{ secrets.MATCH_GIT_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$MATCH_GIT_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Generate Certificates
+        env:
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || 'com.example.myapp' }}
+          KEYCHAIN_NAME: build.keychain
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+          CI: true
+        run: bundle exec fastlane generate_certificates_appstore
+
+      - name: Cleanup Keychain
+        if: always()
+        run: |
+          security delete-keychain build.keychain || true
+
+      - name: Success Message
+        run: |
+          echo "✅ Certificates generated successfully!"
+          echo "🔒 Saved to your certificates repository"
+          echo ""
+          echo "Next steps:"
+          echo "1. Check your certificates repository"
+          echo "2. deploy.yml workflow is now ready to use"

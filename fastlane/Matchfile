@@ -1,0 +1,23 @@
+# Matchfile
+# https://docs.fastlane.tools/actions/match/
+
+# ⚠️ CHANGE THIS to your certificates repository
+git_url("git@github.com:YOUR_USERNAME/certificates.git")
+
+storage_mode("git")
+
+# ⚠️ CHANGE THIS to your bundle identifier
+app_identifier([
+  ENV["BUNDLE_IDENTIFIER"] || "com.example.myapp",
+  "#{ENV["BUNDLE_IDENTIFIER"] || "com.example.myapp"}.ShareExtension"
+])
+
+team_id(ENV["TEAM_ID"])
+username(ENV["APPLE_ID"])
+git_branch("main")
+
+# Keychain settings (for CI)
+keychain_name(ENV["KEYCHAIN_NAME"] || "login.keychain")
+keychain_password(ENV["KEYCHAIN_PASSWORD"] || "")
+
+verbose(true)

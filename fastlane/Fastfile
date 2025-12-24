@@ -1,0 +1,187 @@
+# Fastfile
+# https://docs.fastlane.tools/
+
+default_platform(:ios)
+
+platform :ios do
+  #############################
+  # Before All Hook
+  #############################
+  before_all do
+    if ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"] &&
+       ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"] &&
+       ENV["APP_STORE_CONNECT_API_KEY_KEY"]
+      UI.message("🔑 Using App Store Connect API Key")
+
+      require 'base64'
+      require 'fileutils'
+
+      key_base64 = ENV["APP_STORE_CONNECT_API_KEY_KEY"].gsub(/[\r\n\s]/, '')
+      key_content = Base64.decode64(key_base64)
+
+      unless key_content.include?('BEGIN PRIVATE KEY') && key_content.include?('END PRIVATE KEY')
+        UI.user_error!("❌ Invalid API Key format")
+      end
+
+      private_keys_dir = File.join(Dir.pwd, "private_keys")
+      FileUtils.mkdir_p(private_keys_dir)
+      key_filename = "AuthKey_#{ENV['APP_STORE_CONNECT_API_KEY_KEY_ID']}.p8"
+      key_path = File.join(private_keys_dir, key_filename)
+      File.write(key_path, key_content)
+      File.chmod(0600, key_path)
+
+      @api_key = {
+        key_id: ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+        issuer_id: ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+        key: key_content,
+        duration: 1200,
+        in_house: false
+      }
+      @api_key_filepath = key_path
+      UI.message("✅ API Key configured")
+    end
+  end
+
+  #############################
+  # After All Hook
+  #############################
+  after_all do |lane|
+    cleanup_api_key_file
+  end
+
+  #############################
+  # Error Hook
+  #############################
+  error do |lane, exception|
+    cleanup_api_key_file
+  end
+
+  #############################
+  # Helper: cleanup_api_key_file
+  #############################
+  def cleanup_api_key_file
+    if @api_key_filepath && File.exist?(@api_key_filepath)
+      require 'fileutils'
+      FileUtils.rm_f(@api_key_filepath)
+      UI.message("🧹 Cleaned up temporary API key file")
+      private_keys_dir = File.dirname(@api_key_filepath)
+      if Dir.exist?(private_keys_dir) && Dir.empty?(private_keys_dir)
+        FileUtils.rmdir(private_keys_dir)
+      end
+    end
+  end
+
+  #############################
+  # Lane: setup_certificates
+  #############################
+  desc "Fetch certificates and provisioning profiles using match"
+  lane :setup_certificates do
+    is_ci = ENV['CI'] == 'true'
+
+    match_options = {
+      type: "appstore",
+      readonly: is_ci,
+      verbose: true
+    }
+
+    match_options[:api_key] = @api_key if @api_key
+
+    match(match_options)
+  end
+
+  #############################
+  # Lane: build
+  #############################
+  desc "Build the app"
+  lane :build do
+    setup_certificates
+
+    bundle_id = ENV["BUNDLE_IDENTIFIER"] || "com.example.myapp"
+    extension_bundle_id = "#{bundle_id}.ShareExtension"
+
+    profile_name = ENV["sigh_#{bundle_id}_appstore_profile-name"] || "match AppStore #{bundle_id}"
+    share_extension_profile_name = ENV["sigh_#{extension_bundle_id}_appstore_profile-name"] || "match AppStore #{extension_bundle_id}"
+
+    UI.message("🔐 Code signing configuration:")
+    UI.message("  Team ID: #{ENV['TEAM_ID']}")
+    UI.message("  Main App Profile: #{profile_name}")
+    UI.message("  Share Extension Profile: #{share_extension_profile_name}")
+
+    ENV["APP_PROFILE_NAME"] = profile_name
+    ENV["SHARE_EXTENSION_PROFILE_NAME"] = share_extension_profile_name
+
+    if ENV["TEAM_ID"].nil? || ENV["TEAM_ID"].empty?
+      UI.user_error!("❌ TEAM_ID environment variable is not set")
+    end
+
+    # Read app name from project.yml
+    project_yml = File.read("../project.yml")
+    app_name = project_yml.match(/^name:\s*(.+)$/)[1].strip
+
+    UI.message("🔨 Building #{app_name}...")
+
+    build_app(
+      project: "../#{app_name}.xcodeproj",
+      scheme: app_name,
+      export_method: "app-store",
+      output_directory: "../build",
+      output_name: "#{app_name}.ipa",
+      clean: true,
+      export_options: {
+        method: "app-store",
+        teamID: ENV["TEAM_ID"],
+        signingStyle: "manual",
+        provisioningProfiles: {
+          bundle_id => profile_name,
+          extension_bundle_id => share_extension_profile_name
+        }
+      }
+    )
+  end
+
+  #############################
+  # Lane: beta
+  #############################
+  desc "Upload to TestFlight"
+  lane :beta do
+    build
+
+    if @api_key && @api_key_filepath
+      api_key_dir = File.dirname(@api_key_filepath)
+      ENV["API_PRIVATE_KEYS_DIR"] = api_key_dir
+      ENV["APP_STORE_CONNECT_API_KEY_PATH"] = @api_key_filepath
+    end
+
+    # Read app name from project.yml
+    project_yml = File.read("../project.yml")
+    app_name = project_yml.match(/^name:\s*(.+)$/)[1].strip
+
+    if @api_key
+      UI.message("✅ Uploading #{app_name} to TestFlight...")
+      pilot(
+        api_key: @api_key,
+        skip_waiting_for_build_processing: true,
+        ipa: "../build/#{app_name}.ipa"
+      )
+    else
+      UI.user_error!("API key not available for TestFlight upload")
+    end
+  end
+
+  #############################
+  # Lane: generate_certificates_appstore
+  #############################
+  desc "Generate App Store certificates"
+  lane :generate_certificates_appstore do
+    UI.important("🔐 Generating App Store certificates")
+
+    match_options = {
+      type: "appstore",
+      readonly: false
+    }
+    match_options[:api_key] = @api_key if @api_key
+
+    match(match_options)
+    UI.success("✅ App Store certificates generated!")
+  end
+end

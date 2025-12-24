@@ -1,0 +1,137 @@
+name: iOS Deploy to TestFlight
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & Deploy to TestFlight
+    runs-on: macos-14
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Cache Homebrew packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Cellar/xcodegen
+          key: ${{ runner.os }}-homebrew-xcodegen-v1
+          restore-keys: |
+            ${{ runner.os }}-homebrew-
+
+      - name: Install XcodeGen and ImageMagick
+        run: brew install xcodegen imagemagick || true
+
+      - name: Generate App Icons
+        run: |
+          if [ -f "AppIcon.png" ]; then
+            chmod +x scripts/generate_icons.sh
+            ./scripts/generate_icons.sh
+          else
+            echo "⚠️ AppIcon.png not found, skipping icon generation"
+          fi
+
+      - name: Create Keychain
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: Auto Increment Build Number
+        run: |
+          CURRENT_VERSION=$(grep "CURRENT_PROJECT_VERSION:" project.yml | sed 's/.*"\([0-9]*\)".*/\1/')
+          NEW_VERSION=$((CURRENT_VERSION + 1))
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"$CURRENT_VERSION\"/CURRENT_PROJECT_VERSION: \"$NEW_VERSION\"/" project.yml
+          git add project.yml
+          git commit -m "Auto bump build version to ${NEW_VERSION} [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: Setup SSH for Match Repository
+        env:
+          MATCH_GIT_PRIVATE_KEY: ${{ secrets.MATCH_GIT_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$MATCH_GIT_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Resolve SPM Dependencies
+        run: |
+          APP_NAME=$(grep "^name:" project.yml | sed 's/name: *//')
+          xcodebuild -resolvePackageDependencies -project "${APP_NAME}.xcodeproj" -scheme "${APP_NAME}"
+        timeout-minutes: 10
+
+      - name: Fetch Certificates and Provisioning Profiles
+        env:
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || 'com.example.myapp' }}
+          KEYCHAIN_NAME: build.keychain
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+          CI: true
+        run: bundle exec fastlane setup_certificates
+
+      - name: Build App and Upload to TestFlight
+        env:
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_IDENTIFIER || 'com.example.myapp' }}
+          KEYCHAIN_NAME: build.keychain
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+          FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: 120
+          FASTLANE_XCODEBUILD_SETTINGS_RETRIES: 5
+          CI: true
+        run: bundle exec fastlane beta
+
+      - name: Cleanup Keychain
+        if: always()
+        run: |
+          security delete-keychain build.keychain || true
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ios-app
+          path: build/*.ipa
