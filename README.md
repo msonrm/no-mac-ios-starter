@@ -20,7 +20,6 @@ A complete CI/CD template for building and deploying iOS apps using only GitHub 
 
 - Apple Developer Program ($99/year)
 - GitHub account
-- Firebase project (free tier is fine)
 - AI assistant (Claude, ChatGPT, Cursor, etc.)
 
 That's it. No Mac needed.
@@ -138,8 +137,6 @@ MIT License - see [LICENSE](LICENSE)
 
 **Mac実機なしでTestFlightまで完走できるiOSアプリ開発キット。**
 
-Zenn読者へのクリスマスプレゼント。🎄
-
 - Expoじゃない。ピュアSwiftUI。
 - Share Extensionも使える。
 - GitHub Actionsだけで完結。
@@ -148,7 +145,6 @@ Zenn読者へのクリスマスプレゼント。🎄
 
 - Apple Developer Program（年12,800円）
 - GitHubアカウント
-- Firebaseプロジェクト（無料枠でOK）
 - AIアシスタント（Claude、ChatGPT、Cursorなど）
 
 Macは不要。
